@@ -2,7 +2,8 @@ name: Portal Scanner
 
 on:
   schedule:
-    - cron: '0 12 * * 1-5' # Runs Mon-Fri at 12:00 UTC
+    # Runs at 12:00 AM and 12:00 PM Central Daylight Saving Time (CDT / UTC-5)
+    - cron: '0 5,17 * * *'
   workflow_dispatch:       # Allows manual trigger from the Actions tab
     inputs:
       reset_cache:
@@ -70,7 +71,12 @@ jobs:
           fi
 
       - name: Run Portal Scanner
-        run: node scan.mjs
+        run: |
+          # Dynamically calculate the date 7 days ago in YYYY-MM-DD format
+          SEVEN_DAYS_AGO=$(date -d "7 days ago" +%Y-%m-%d)
+          
+          # Pass the parameter directly to scan.mjs
+          node scan.mjs --posted-after "$SEVEN_DAYS_AGO"
 
       # Shred portals.yml immediately after scanning
       - name: Remove temporary secret files
