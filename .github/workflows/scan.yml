@@ -1,0 +1,120 @@
+name: Portal Scanner
+
+on:
+  schedule:
+    - cron: '0 12 * * 1-5' # Runs Mon-Fri at 12:00 UTC
+  workflow_dispatch:       # Allows manual trigger from the Actions tab
+    inputs:
+      reset_cache:
+        description: 'Ignore previous scan history and rescan all portals'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: career-ops-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      # Restore data/ from previous runs so scan.mjs deduplicates already-seen jobs
+      - name: Restore scan history from cache
+        if: ${{ github.event.inputs.reset_cache != 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/
+          key: career-ops-scan-data-${{ github.run_id }}
+          restore-keys: |
+            career-ops-scan-data-
+
+      # Inject portals.yml (and optional profile.yml) into the runner without committing
+      - name: Write portals.yml from Secret
+        env:
+          PORTALS_YML: ${{ secrets.PORTALS_YML }}
+          PROFILE_YML: ${{ secrets.PROFILE_YML }}
+        run: |
+          if [ -z "$PORTALS_YML" ]; then
+            echo "::error::Secret PORTALS_YML is not set. Add it in Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          mkdir -p data config
+          printf '%s\n' "$PORTALS_YML" > portals.yml
+          if [ -n "$PROFILE_YML" ]; then
+            printf '%s\n' "$PROFILE_YML" > config/profile.yml
+          fi
+
+      - name: Run Portal Scanner
+        run: node scan.mjs
+
+      # Shred portals.yml immediately after scanning
+      - name: Remove temporary secret files
+        if: always()
+        run: rm -f portals.yml config/profile.yml
+
+      # Save updated data/pipeline.md & scan history into cache for the next run
+      - name: Save updated scan history to cache
+        uses: actions/cache/save@v4
+        with:
+          path: data/
+          key: career-ops-scan-data-${{ github.run_id }}
+
+      # Render results in the Job Summary and optionally send to private Discord webhook
+      - name: Publish Scan Summary
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ -f data/pipeline.md ]; then
+            echo "## 📋 Latest `data/pipeline.md`" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            cat data/pipeline.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No `data/pipeline.md` generated." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ -n "$DISCORD_WEBHOOK_URL" ] && [ -f data/pipeline.md ]; then
+            node --input-type=module -e '
+              import fs from "node:fs";
+              const content = fs.readFileSync("data/pipeline.md", "utf8");
+              const pending = (content.split(/^##\s+(?:Procesadas|Processed)/im)[0] || content).slice(0, 1900);
+              await fetch(process.env.DISCORD_WEBHOOK_URL, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                  username: "career-ops scanner",
+                  content: "**Portal Scan Completed**\n```markdown\n" + pending + "\n```"
+                })
+              });
+            '
+          fi
+
+      # Upload data/ as a downloadable artifact (retained for 7 days)
+      - name: Upload pipeline.md artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: scan-results
+          path: data/
+          retention-days: 7
+          if-no-files-found: ignore
