@@ -39,12 +39,15 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts
 
-      # Restore data/ from previous runs so scan.mjs deduplicates already-seen jobs
+      # Restore scan history from previous runs so scan.mjs deduplicates already-seen jobs
       - name: Restore scan history from cache
         if: ${{ github.event.inputs.reset_cache != 'true' }}
         uses: actions/cache/restore@v4
         with:
-          path: data/
+          path: |
+            data/pipeline.md
+            data/scan-history.tsv
+            data/scan-runs.tsv
           key: career-ops-scan-data-${{ github.run_id }}
           restore-keys: |
             career-ops-scan-data-
@@ -55,14 +58,15 @@ jobs:
           PORTALS_YML: ${{ secrets.PORTALS_YML }}
           PROFILE_YML: ${{ secrets.PROFILE_YML }}
         run: |
+          set +x
           if [ -z "$PORTALS_YML" ]; then
             echo "::error::Secret PORTALS_YML is not set. Add it in Settings -> Secrets and variables -> Actions."
             exit 1
           fi
           mkdir -p data config
-          printf '%s\n' "$PORTALS_YML" > portals.yml
+          printenv PORTALS_YML > portals.yml
           if [ -n "$PROFILE_YML" ]; then
-            printf '%s\n' "$PROFILE_YML" > config/profile.yml
+            printenv PROFILE_YML > config/profile.yml
           fi
 
       - name: Run Portal Scanner
@@ -77,44 +81,88 @@ jobs:
       - name: Save updated scan history to cache
         uses: actions/cache/save@v4
         with:
-          path: data/
+          path: |
+            data/pipeline.md
+            data/scan-history.tsv
+            data/scan-runs.tsv
           key: career-ops-scan-data-${{ github.run_id }}
 
-      # Render results in the Job Summary and optionally send to private Discord webhook
-      - name: Publish Scan Summary
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      # Render high-level status in GitHub Step Summary (no sensitive job details exposed)
+      - name: Publish Scan Status to Step Summary
         run: |
           if [ -f data/pipeline.md ]; then
-            echo "## 📋 Latest `data/pipeline.md`" >> "$GITHUB_STEP_SUMMARY"
+            count=$(grep -c '^- \[ \]' data/pipeline.md 2>/dev/null || echo 0)
+            echo "## 📋 Portal Scanner Status" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            cat data/pipeline.md >> "$GITHUB_STEP_SUMMARY"
+            echo "- ✅ Scan completed successfully." >> "$GITHUB_STEP_SUMMARY"
+            echo "- 📬 Total pending opportunities: **$count**" >> "$GITHUB_STEP_SUMMARY"
+            echo "- 📧 Email notification triggered." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "No `data/pipeline.md` generated." >> "$GITHUB_STEP_SUMMARY"
+            echo "No \`data/pipeline.md\` generated." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          if [ -n "$DISCORD_WEBHOOK_URL" ] && [ -f data/pipeline.md ]; then
+      # Send private email digest and attach pipeline.md via Resend API
+      - name: Send Email Digest via Resend
+        if: always()
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          NOTIFICATION_EMAIL: ${{ secrets.NOTIFICATION_EMAIL }}
+        run: |
+          if [ -z "$RESEND_API_KEY" ] || [ -z "$NOTIFICATION_EMAIL" ]; then
+            echo "::warning::RESEND_API_KEY or NOTIFICATION_EMAIL secret is not set. Skipping email dispatch."
+            exit 0
+          fi
+
+          if [ -f data/pipeline.md ]; then
             node --input-type=module -e '
               import fs from "node:fs";
+
               const content = fs.readFileSync("data/pipeline.md", "utf8");
-              const pending = (content.split(/^##\s+(?:Procesadas|Processed)/im)[0] || content).slice(0, 1900);
-              await fetch(process.env.DISCORD_WEBHOOK_URL, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({
-                  username: "career-ops scanner",
-                  content: "**Portal Scan Completed**\n```markdown\n" + pending + "\n```"
-                })
-              });
+              const count = (content.match(/^- \[ \]/gm) || []).length;
+              const base64Attachment = Buffer.from(content).toString("base64");
+
+              const pendingSection = content.split(/^##\s+(?:Procesadas|Processed)/im)[0] || content;
+              const pendingLines = pendingSection
+                .split("\n")
+                .filter(l => l.startsWith("- [ ]"))
+                .slice(0, 15)
+                .map(l => l.replace(/^- \[ \] /, "• "))
+                .join("\n");
+
+              const emailBody = `Career-Ops Portal Scan Completed!\n\n` +
+                `Total pending opportunities in pipeline: ${count}\n\n` +
+                (count > 0 ? `Recent matches preview:\n${pendingLines}\n\n` : "") +
+                `The full pipeline.md file is attached to this email.`;
+
+              try {
+                const res = await fetch("https://api.resend.com/emails", {
+                  method: "POST",
+                  headers: {
+                    "Authorization": `Bearer ${process.env.RESEND_API_KEY}`,
+                    "Content-Type": "application/json"
+                  },
+                  body: JSON.stringify({
+                    from: "Career-Ops Scanner <onboarding@resend.dev>",
+                    to: [process.env.NOTIFICATION_EMAIL],
+                    subject: `Career-Ops Daily Digest: ${count} New Opportunities`,
+                    text: emailBody,
+                    attachments: [
+                      {
+                        filename: "pipeline.md",
+                        content: base64Attachment
+                      }
+                    ]
+                  })
+                });
+
+                if (res.ok) {
+                  console.log("Email digest sent successfully via Resend.");
+                } else {
+                  const errorText = await res.text();
+                  console.error("Resend API failed with status:", res.status, errorText);
+                }
+              } catch (err) {
+                console.error("Failed to connect to Resend API (network error).");
+              }
             '
           fi
-
-      # Upload data/ as a downloadable artifact (retained for 7 days)
-      - name: Upload pipeline.md artifact
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: scan-results
-          path: data/
-          retention-days: 7
-          if-no-files-found: ignore
