@@ -55,29 +55,24 @@ jobs:
       - name: 6. Scan Job Boards & Check Liveness (Zero Tokens)
         run: |
           node scan.mjs
-          node check-liveness.mjs --apply --discard-expired
-          node dedup-tracker.mjs --apply
+          # node check-liveness.mjs
+          # node dedup-tracker.mjs
 
       - name: 7. Run Gemini Batch Evaluation & Tailored PDF Generation
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: gemini-2.5-flash
         run: |
-          # Only run batch evaluation if cv.md exists and pipeline.md has pending offers
-          if [ -s cv.md ] && [ -s data/pipeline.md ]; then
-            node batch-evaluate-gemini.mjs --limit 10
-            node merge-tracker.mjs
-            node batch-tailor.mjs --min-grade B --apply || true
-          else
-            echo "Skipping AI evaluation: either cv.md is missing in Google Drive or no new pending offers in data/pipeline.md."
-          fi
+          # node batch-evaluate-gemini.mjs --limit 10
+          # node merge-tracker.mjs
+          # node batch-tailor.mjs --min-grade B --apply || true
 
       - name: 8. Run Agentic Workflow (Optional via Official Gemini CLI)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           # Uses GEMINI.md and .agents/skills/career-ops/SKILL.md for agentic analysis
-          gemini -p "Read data/applications.md and reports/, then run node analyze-patterns.mjs and write a daily summary of the top 3 roles to data/daily-brief.md" --yolo || true
+          # gemini -p "Read data/applications.md and reports/, then run node analyze-patterns.mjs and write a daily summary of the top 3 roles to data/daily-brief.md" --yolo || true
 
       - name: 9. Push All Outputs Back to Google Drive
         if: always()
@@ -87,7 +82,7 @@ jobs:
           RCLONE_CONFIG_GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
           RCLONE_CONFIG_GDRIVE_SERVICE_ACCOUNT_FILE: /tmp/secrets/sa-key.json
         run: |
-          rclone copy ./data/ gdrive:data/
+          # rclone copy ./data/ gdrive:data/
           rclone copy ./jds/ gdrive:jds/
           rclone copy ./reports/ gdrive:reports/
           rclone copy ./output/ gdrive:output/
