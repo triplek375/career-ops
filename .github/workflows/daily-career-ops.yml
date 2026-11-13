@@ -55,22 +55,22 @@ jobs:
       - name: 6. Scan Job Boards & Check Liveness (Zero Tokens)
         run: |
           node scan.mjs
-          node check-liveness.mjs --apply-defaults
-          node dedup-tracker.mjs
+          node check-liveness.mjs --apply --discard-expired
+          node dedup-tracker.mjs --apply
 
       - name: 7. Run Gemini Batch Evaluation & Tailored PDF Generation
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: gemini-2.5-flash
         run: |
-          # Evaluates pending jobs in data/pipeline.md, scores them, and writes reports/
-          node batch-evaluate-gemini.mjs --limit 20
-          
-          # Merges newly evaluated jobs into data/applications.md
-          node merge-tracker.mjs
-          
-          # Generates tailored HTML + PDF resumes in output/ for top-scoring roles
-          node batch-tailor.mjs --min-score 4.0 --limit 5 || true
+          # Only run batch evaluation if cv.md exists and pipeline.md has pending offers
+          if [ -s cv.md ] && [ -s data/pipeline.md ]; then
+            node batch-evaluate-gemini.mjs --limit 10
+            node merge-tracker.mjs
+            node batch-tailor.mjs --min-grade B --apply || true
+          else
+            echo "Skipping AI evaluation: either cv.md is missing in Google Drive or no new pending offers in data/pipeline.md."
+          fi
 
       - name: 8. Run Agentic Workflow (Optional via Official Gemini CLI)
         env:
