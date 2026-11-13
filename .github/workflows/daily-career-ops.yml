@@ -82,8 +82,8 @@ jobs:
           RCLONE_CONFIG_GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
           RCLONE_CONFIG_GDRIVE_SERVICE_ACCOUNT_FILE: /tmp/secrets/sa-key.json
         run: |
-          rclone copy ./data/ gdrive:data/
-          rclone copy ./jds/ gdrive:jds/
-          rclone copy ./reports/ gdrive:reports/
-          rclone copy ./output/ gdrive:output/
+          rclone copy ./data/ gdrive:data/ --include "{pipeline.md,scan-history.tsv,scan-runs.tsv,portal-health.tsv}"
+          # rclone copy ./jds/ gdrive:jds/
+          # rclone copy ./reports/ gdrive:reports/
+          # rclone copy ./output/ gdrive:output/
           rm -f /tmp/secrets/sa-key.json
