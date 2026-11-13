@@ -54,8 +54,8 @@ jobs:
 
       - name: 6. Scan Job Boards & Check Liveness (Zero Tokens)
         run: |
-          node scan.mjs --apply-defaults
-          node check-liveness.mjs
+          node scan.mjs
+          node check-liveness.mjs --apply-defaults
           node dedup-tracker.mjs
 
       - name: 7. Run Gemini Batch Evaluation & Tailored PDF Generation
